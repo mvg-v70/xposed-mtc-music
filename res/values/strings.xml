@@ -1,0 +1,7 @@
+<resources>
+
+   <string name="app_name" translatable="false">XposedMTCMusic</string>
+   <string name="app_version_name" translatable="false">1.1</string>
+   <string name="app_description">fixes some bugs and adds new functions in microntek music app</string>
+
+</resources>
