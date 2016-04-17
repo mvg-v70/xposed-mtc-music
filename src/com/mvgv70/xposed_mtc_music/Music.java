@@ -3,30 +3,35 @@ package com.mvgv70.xposed_mtc_music;
 import java.io.File;
 import java.util.ArrayList;
 
+import org.jaudiotagger.audio.AudioFileIO;
+import org.jaudiotagger.audio.mp3.MP3File;
+
 import com.mvgv70.utils.IniFile;
 
 import android.app.Activity;
 import android.content.BroadcastReceiver;
-import android.content.ContentUris;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
-import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.Drawable;
 import android.media.MediaPlayer;
-import android.net.Uri;
+
+import org.jaudiotagger.tag.FieldKey;
+import org.jaudiotagger.tag.Tag;
+import org.jaudiotagger.tag.datatype.Artwork;
+
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.ParcelFileDescriptor;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -39,8 +44,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 public class Music implements IXposedHookLoadPackage 
 {
-  private final static String INI_FILE_NAME = "/mnt/external_sd/mtc-music/mtc-music.ini";
-  private final static String MAIN_SECTION = "main";
+  private final static String INI_FILE_SHORT = "settings.ini";
+  private final static String INI_FILE_NAME = "/mnt/external_sd/mtc-music/"+INI_FILE_SHORT;
+  private final static String USER_SETTINGS_NAME = "/mnt/external_sd/mtc-music/mtc-music.ini";
   private final static String MUSIC_SECTION = "music";
   private static IniFile props = new IniFile();
   //
@@ -51,7 +57,14 @@ public class Music implements IXposedHookLoadPackage
   private static Drawable ico_shuffle;
   private static BroadcastReceiver usbReceiver = null;
   private static boolean mPlaying = false;
-  private static Handler handler;
+  private static Toast toast = null;
+  private static boolean assetProps = false;
+  // настройки
+  private static boolean active_flag = false;
+  private static boolean ss_flag = false;
+  private static boolean toastEnable = false;
+  private static int toastSize = 0;
+  // private static Handler handler;
   // режимы loop
   private final static int LOOP_MODE_NEXT_DIR = 0;
   private final static int LOOP_MODE_SINGLE_FILE = 1;
@@ -59,19 +72,21 @@ public class Music implements IXposedHookLoadPackage
   private final static int LOOP_MODE_SHUFFLE = 3;
   private static int loop_mode;
   // mp3-tags
-  private static String currentFileName;
+  private static String currentFileName = "";
+  private static String shortFileName = "";
   private static String album = "";
   private static String title = "";
   private static String artist = "";
-  private static long album_id = -1;
-  private static long _id = -1;
   private static Bitmap cover = null;
   // параметры в mtc-music.ini
-  private static String back_press_name;
-  private static int back_press_time;
-  private static Boolean control_keys;
+  private static String back_press_name = "";
+  private static int back_press_time = 0;
+  private static String fwd_press_name = "";
+  private static int fwd_press_time = 0;
+  private static String eq_button_name = "";
+  private static Boolean control_keys = false;
   private static String album_cover_name = "";
-  private static String music_list_name;
+  private static String music_list_name = "music_list";
   private static String title_name = "";
   private static String album_name = "";
   private static String artist_name = "";
@@ -80,9 +95,14 @@ public class Music implements IXposedHookLoadPackage
   private static String ico_shuffle_name = "";
   private static String findview_by_name = "";
   private static String blank_cover_name = "";
+  private static String background_image_name = "";
+  private static float background_alpha = 1;
+  private static String toast_format = "%title%";
   // элементы
   private static View visualizerView = null;
   private static View back_press_view = null;
+  private static View fwd_press_view = null;
+  private static Button eq_button_view = null;
   private static int ico_shuffle_id;
   private static int blank_cover_id;
   // теги
@@ -90,6 +110,7 @@ public class Music implements IXposedHookLoadPackage
   private static TextView artistView = null;
   private static TextView albumView = null;
   private static ImageView coverView = null;
+  private static ImageView backgroundView = null;
   private final static String TAG = "xposed-mtc-music";
   
   @Override
@@ -103,7 +124,7 @@ public class Music implements IXposedHookLoadPackage
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
         Log.d(TAG,"onCreate");
         musicActivity = (Activity)param.thisObject;
-        handler = (Handler)XposedHelpers.getObjectField(musicActivity, "handler");
+        // handler = (Handler)XposedHelpers.getObjectField(musicActivity, "handler");
         mUi = XposedHelpers.getObjectField(param.thisObject, "mUi");
         mServer = XposedHelpers.getObjectField(param.thisObject, "mServer");
         // показать версию модуля
@@ -118,10 +139,29 @@ public class Music implements IXposedHookLoadPackage
         // обработчики подключения флешки и медиа-кнопок
         createReceivers();
         // создаем обработчик возврата
-        createBackPressListener();
+        createBackFwdPressListener();
         // если выбран режим перемешивания нарисуем картинку
         if (loop_mode == LOOP_MODE_SHUFFLE)
           XposedHelpers.callMethod(mUi, "updateRepeat", loop_mode);
+      }
+    };
+    
+    // MusicActivity.onStop()
+    XC_MethodHook onStop = new XC_MethodHook() {
+	           
+      @Override
+      protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+    	active_flag = false;
+      }
+    };
+    
+    // MusicActivity.onResume()
+    XC_MethodHook onResume = new XC_MethodHook() {
+	           
+      @Override
+      protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        ss_flag = false;
+    	active_flag = true;
       }
     };
     
@@ -138,7 +178,9 @@ public class Music implements IXposedHookLoadPackage
           musicActivity.unregisterReceiver(commandReceiver);
         }
         musicActivity.unregisterReceiver(tagsQueryReceiver);
+        musicActivity.unregisterReceiver(endClockReceiver);
         musicActivity = null;
+        toast = null;
       }
     };
     
@@ -172,8 +214,29 @@ public class Music implements IXposedHookLoadPackage
       	}
       	Log.d(TAG,"fileName="+fileName);
       	currentFileName = fileName;
-      	// отложенное чтение mp3-тегов
-      	handler.postDelayed(mp3Info, 100);
+      	// чтение mp3-тегов
+        readMp3Infos(currentFileName);
+        showMp3Infos();
+        // отсылаем информацию о тегах
+        sendNotifyIntent(musicActivity);
+        // всплывающее уведомление
+        if (toastEnable && !active_flag && !ss_flag)
+        {
+          if (toast != null)
+          {
+            toast.cancel();
+            toast = null;
+          }
+          toast = Toast.makeText(musicActivity, getToastText(), Toast.LENGTH_SHORT);
+          if (toastSize > 0)
+          {
+            // toast size
+            ViewGroup group = (ViewGroup)toast.getView();
+            TextView messageTextView = (TextView)group.getChildAt(0);
+            messageTextView.setTextSize(toastSize);
+          }
+          toast.show();
+        }
       }
     };
     
@@ -215,7 +278,7 @@ public class Music implements IXposedHookLoadPackage
           XposedHelpers.setObjectField(param.thisObject, "mPlayer", null);
         }
         @SuppressWarnings("unchecked")
-		ArrayList<String> folder_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, "folderList");
+        ArrayList<String> folder_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, "folderList");
         // по режимам
         if (LoopMode == LOOP_MODE_NEXT_DIR)
         {
@@ -275,6 +338,77 @@ public class Music implements IXposedHookLoadPackage
       }
     };
     
+    // MusicServer.sNext()
+    XC_MethodHook sNext = new XC_MethodHook() {
+        
+      @Override
+      protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+        int LoopMode = XposedHelpers.getIntField(param.thisObject, "LoopMode");
+        Log.d(TAG,"sNext.LoopMode="+LoopMode+" ("+loop_mode+")");
+        // в режиме следующего каталога
+        if (LoopMode == LOOP_MODE_NEXT_DIR)
+        {
+          int sel_item = XposedHelpers.getIntField(param.thisObject, "selItem");
+          @SuppressWarnings("unchecked")
+          ArrayList<String> music_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, music_list_name);
+          Log.d(TAG,"sel_item="+sel_item+", music_list.size="+music_list.size());
+          if (sel_item == (music_list.size()-1))
+          {
+            // играем следующий каталог
+        	@SuppressWarnings("unchecked")
+            ArrayList<String> folder_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, "folderList");
+            File file = new File(currentFileName,"");
+            String dir = file.getParent();
+            int index = folder_list.indexOf(dir);
+            Log.d(TAG,"dir index="+index);
+            if ((index >= 0) && (index < (folder_list.size()-1)))
+            {
+              // играем следующую папку
+              XposedHelpers.callMethod(musicActivity, "toFolder", index+1);
+            }
+            // не вызываем штатный обработчик
+            param.setResult(null);
+          }
+        }
+      }
+    };
+    
+    // MusicServer.sPrev()
+    XC_MethodHook sPrev = new XC_MethodHook() {
+        
+      @Override
+      protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+        int LoopMode = XposedHelpers.getIntField(param.thisObject, "LoopMode");
+        Log.d(TAG,"sPrev.LoopMode="+LoopMode+" ("+loop_mode+")");
+        // в режиме следующего каталога
+        if (LoopMode == LOOP_MODE_NEXT_DIR)
+        {
+          int sel_item = XposedHelpers.getIntField(param.thisObject, "selItem");
+          @SuppressWarnings("unchecked")
+          ArrayList<String> music_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, music_list_name);
+          Log.d(TAG,"sel_item="+sel_item+", music_list.size="+music_list.size());
+          if ((sel_item == 0) && (music_list.size() > 0))
+          {
+            // играем предыдующий каталог
+            @SuppressWarnings("unchecked")
+            ArrayList<String> folder_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, "folderList");
+            File file = new File(currentFileName,"");
+            String dir = file.getParent();
+            int index = folder_list.indexOf(dir);
+            Log.d(TAG,"dir index="+index);
+            if ((index > 0) && (folder_list.size() > 0))
+            {
+              // играем предыдующую папку
+              XposedHelpers.callMethod(musicActivity, "toFolder", index-1);
+              // TODO: перейти на последний трек
+            }
+            // не вызываем штатный обработчик
+            param.setResult(null);
+          }
+        }
+      }
+    };
+    
     // MusicActivity.cmdLoop()
     XC_MethodReplacement cmdLoop = new XC_MethodReplacement() {
         
@@ -322,13 +456,34 @@ public class Music implements IXposedHookLoadPackage
       }
     };
     
+    // Ui*.updateEq(int)
+    XC_MethodHook updateEq = new XC_MethodHook() {
+        
+      @Override
+      protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+        if (eq_button_view != null) param.setResult(null);
+      }
+    };
+    
+    // XDA: Ui*.updateImageView(Bitmap)
+    XC_MethodHook updateImageView = new XC_MethodHook() {
+        
+      @Override
+      protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+    	// если есть assets не выполняем функцию
+        if (assetProps) param.setResult(null);
+      }
+    };
+    
     // start hooks
     if (!lpparam.packageName.equals("com.microntek.music")) return;
     Log.d(TAG,"com.microntek.music");
     XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "onCreate", Bundle.class, onCreate);
-    XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "onState", int.class, onState);
-    XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "updataMp3info", updataMp3info);
+    XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "onStop", onStop);
+    XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "onResume", onResume);
     XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "onDestroy", onDestroy);
+    XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "updataMp3info", updataMp3info);
+    XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "onState", int.class, onState);
     XposedHelpers.findAndHookMethod("com.microntek.music.MusicActivity", lpparam.classLoader, "cmdLoop", cmdLoop);
     // ищем используемый Ui
     for (int i=1; i<=5; i++)
@@ -336,38 +491,63 @@ public class Music implements IXposedHookLoadPackage
       try
       {
         XposedHelpers.findAndHookMethod("com.microntek.music.ui.Ui"+i, lpparam.classLoader, "updateRepeat", int.class, updateRepeat);
+        XposedHelpers.findAndHookMethod("com.microntek.music.ui.Ui"+i, lpparam.classLoader, "updateEq", int.class, updateEq);
         Log.d(TAG,"Ui"+i+" detected...");
+        // для плеера с XDA 
+        try
+        {
+          XposedHelpers.findAndHookMethod("com.microntek.music.ui.Ui"+i, lpparam.classLoader, "updateImageView", Bitmap.class, updateImageView);
+        }
+        catch (Error e) {}
         break;
       }
       catch (Error e) {}
     }
     XposedHelpers.findAndHookMethod("android.view.SurfaceView", lpparam.classLoader, "setVisibility", int.class, setVisuVisibility);
     XposedHelpers.findAndHookMethod("com.microntek.music.MusicServer", lpparam.classLoader, "onCompletion", MediaPlayer.class, onCompletion);
+    XposedHelpers.findAndHookMethod("com.microntek.music.MusicServer", lpparam.classLoader, "sNext", sNext);
+    XposedHelpers.findAndHookMethod("com.microntek.music.MusicServer", lpparam.classLoader, "sPrev", sPrev);
     Log.d(TAG,"com.microntek.music hook OK");
   }
 
   // чтение глобальных настроек из mtc-music.ini
   private void readSettings()
   {
+    assetProps = false;
     try
     {
-      Log.d(TAG,"read settings from "+INI_FILE_NAME);
-      props.loadFromFile(INI_FILE_NAME);
+      // читаем настроечный файл из assests
+      try
+      {
+    	Log.d(TAG,"read settings from assets/"+INI_FILE_SHORT);
+        props.loadFromAssets(musicActivity, INI_FILE_SHORT);
+        assetProps = true;
+      }
+      catch (Exception e)
+      {
+    	// если нет assests читаем файл
+        Log.d(TAG,"read settings from "+INI_FILE_NAME);
+        props.loadFromFile(INI_FILE_NAME);
+      }
       // имя переменной music_list
-      music_list_name = props.getValue(MAIN_SECTION, "music_list", "music_list");
+      music_list_name = props.getValue(MUSIC_SECTION, "music_list", "music_list");
       Log.d(TAG,"music_list="+music_list_name);
       // control_keys
-      control_keys = props.getBoolValue(MAIN_SECTION, "control_keys", false);
+      control_keys = props.getBoolValue(MUSIC_SECTION, "control_keys", false);
       Log.d(TAG,"control_keys="+control_keys);
       // backpress
-      back_press_name = props.getValue(MAIN_SECTION, "backpress.name");
-      back_press_time = props.getIntValue(MAIN_SECTION, "backpress.time",20);
+      back_press_name = props.getValue(MUSIC_SECTION, "backpress.name");
+      back_press_time = props.getIntValue(MUSIC_SECTION, "backpress.time",20);
       Log.d(TAG,"back_press_name="+back_press_name+", back_press_time="+back_press_time);
+      // forwardpress
+      fwd_press_name = props.getValue(MUSIC_SECTION, "fwdpress.name");
+      fwd_press_time = props.getIntValue(MUSIC_SECTION, "fwdpress.time",20);
+      Log.d(TAG,"fwd_press_name="+fwd_press_name+", fwd_press_time="+fwd_press_time);
       // visualizer_name
-      visualizer_name = props.getValue(MAIN_SECTION, "visualizer");
+      visualizer_name = props.getValue(MUSIC_SECTION, "visualizer");
       Log.d(TAG,"visualizer_name="+visualizer_name);
       // album_cover_name
-      album_cover_name = props.getValue(MAIN_SECTION, "album_cover");
+      album_cover_name = props.getValue(MUSIC_SECTION, "album_cover");
       Log.d(TAG,"album_cover_name="+album_cover_name);
       // теги
       title_name = props.getValue(MUSIC_SECTION, "title", "");
@@ -378,16 +558,70 @@ public class Music implements IXposedHookLoadPackage
       Log.d(TAG,"artist_name="+artist_name);
       cover_name = props.getValue(MUSIC_SECTION, "cover", "");
       Log.d(TAG,"cover_name="+cover_name);
+      // background_image_name
+      background_image_name = props.getValue(MUSIC_SECTION, "background_image", "");
+      Log.d(TAG,"background_image_name="+background_image_name);
+      // background_alpha
+      background_alpha = props.getFloatValue(MUSIC_SECTION, "background_alpha", 0.25f);
+      Log.d(TAG,"background_alpha="+background_alpha);
+      // кнопка эквалайзера
+      eq_button_name = props.getValue(MUSIC_SECTION, "eq_button", "");
+      Log.d(TAG,"eq_button_name="+eq_button_name);
       // ico_shuffle_name
-      ico_shuffle_name = props.getValue(MAIN_SECTION, "ico_shuffle", "");
+      ico_shuffle_name = props.getValue(MUSIC_SECTION, "ico_shuffle", "");
       Log.d(TAG,"ico_shuffle_name="+ico_shuffle_name);
       // findview_by_name
-      findview_by_name = props.getValue(MAIN_SECTION, "findview_by", "");
+      findview_by_name = props.getValue(MUSIC_SECTION, "findview_by", "");
       Log.d(TAG,"findview_by_name="+findview_by_name);
       // blank_cover_name
-      blank_cover_name = props.getValue(MAIN_SECTION, "blank_cover", "");
+      blank_cover_name = props.getValue(MUSIC_SECTION, "blank_cover", "");
       Log.d(TAG,"blank_cover_name="+blank_cover_name);
-    } catch (Exception e)
+      // toast
+      toastEnable = props.getBoolValue(MUSIC_SECTION, "toast", false);
+      Log.d(TAG,"toastEnable="+toastEnable);
+      // toast.size
+      toastSize = props.getIntValue(MUSIC_SECTION, "toast.size", 0);
+      Log.d(TAG,"toast.size="+toastSize);
+      // toast.format
+      toast_format = props.getValue(MUSIC_SECTION, "toast.format", "%title%");
+      Log.d(TAG,"toast.format="+toast_format);
+    } 
+    catch (Exception e)
+    {
+      Log.e(TAG,e.getMessage());
+    }
+    // читаем пользовательские настройки
+    IniFile user_props = new IniFile();
+    try
+    {
+      Log.d(TAG,"read user settings from "+USER_SETTINGS_NAME);
+      user_props.loadFromFile(USER_SETTINGS_NAME);
+      // control_keys
+      control_keys = user_props.getBoolValue(MUSIC_SECTION, "control_keys", control_keys);
+      Log.d(TAG,"control_keys="+control_keys);
+      // backpress
+      back_press_time = user_props.getIntValue(MUSIC_SECTION, "backpress.time",back_press_time);
+      Log.d(TAG,"back_press_name="+back_press_name+", back_press_time="+back_press_time);
+      // forwardpress
+      fwd_press_time = props.getIntValue(MUSIC_SECTION, "fwdpress.time",fwd_press_time);
+      Log.d(TAG,"fwd_press_name="+fwd_press_name+", fwd_press_time="+fwd_press_time);
+      // album_cover_name
+      album_cover_name = user_props.getValue(MUSIC_SECTION, "album_cover", album_cover_name);
+      Log.d(TAG,"album_cover_name="+album_cover_name);
+      // toast
+      toastEnable = user_props.getBoolValue(MUSIC_SECTION, "toast", toastEnable);
+      Log.d(TAG,"toastEnable="+toastEnable);
+      // toast.size
+      toastSize = user_props.getIntValue(MUSIC_SECTION, "toast.size", toastSize);
+      Log.d(TAG,"toast.size="+toastSize);
+      // toast.format
+      toast_format = user_props.getValue(MUSIC_SECTION, "toast.format", toast_format);
+      Log.d(TAG,"toast.format="+toast_format);
+      // background_alpha
+      background_alpha = user_props.getFloatValue(MUSIC_SECTION, "background_alpha", background_alpha);
+      Log.d(TAG,"background_alpha="+background_alpha);
+    }
+    catch (Exception e)
     {
       Log.e(TAG,e.getMessage());
     }
@@ -396,8 +630,11 @@ public class Music implements IXposedHookLoadPackage
     int album_id = 0;
     int artist_id = 0;
     int cover_id = 0;
+    int background_id = 0;
     int visualizer_id = 0;
     int back_press_id = 0;
+    int fwd_press_id = 0;
+    int eq_button_id = 0;
     Resources res = musicActivity.getResources();
     if (!title_name.isEmpty())
       title_id = res.getIdentifier(title_name, "id", musicActivity.getPackageName());
@@ -407,23 +644,34 @@ public class Music implements IXposedHookLoadPackage
       artist_id = res.getIdentifier(artist_name, "id", musicActivity.getPackageName());
     if (!cover_name.isEmpty())
       cover_id = res.getIdentifier(cover_name, "id", musicActivity.getPackageName());
+    if (!background_image_name.isEmpty())
+      background_id = res.getIdentifier(background_image_name, "id", musicActivity.getPackageName());
     if (!visualizer_name.isEmpty())
       visualizer_id = res.getIdentifier(visualizer_name, "id", musicActivity.getPackageName());
     if (!back_press_name.isEmpty())
       back_press_id = res.getIdentifier(back_press_name, "id", musicActivity.getPackageName());
-    //
+    if (!fwd_press_name.isEmpty())
+      fwd_press_id = res.getIdentifier(fwd_press_name, "id", musicActivity.getPackageName());
+    if (!eq_button_name.isEmpty())
+      eq_button_id = res.getIdentifier(eq_button_name, "id", musicActivity.getPackageName());
+    // debug
     Log.d(TAG,"title_id="+title_id);
     Log.d(TAG,"album_id="+album_id);
     Log.d(TAG,"artist_id="+artist_id);
     Log.d(TAG,"cover_id="+cover_id);
+    Log.d(TAG,"background_id="+background_id);
     Log.d(TAG,"visualizer_id="+visualizer_id);
     Log.d(TAG,"back_press_id="+back_press_id);
+    Log.d(TAG,"fwd_press_id="+fwd_press_id);
+    Log.d(TAG,"eq_button_id="+eq_button_id);
     // views
     titleView = null;
     albumView = null;
     artistView = null;
     coverView = null;
+    backgroundView = null;
     visualizerView = null;
+    eq_button_view = null;
     // альтернативный View для поиска элементов
     View findView = null;
     if (!findview_by_name.isEmpty())
@@ -462,6 +710,7 @@ public class Music implements IXposedHookLoadPackage
         artistView = (TextView)findView.findViewById(artist_id);
       if (artistView == null) Log.w(TAG,"artistView == null");
     }
+    // cover
     if (cover_id > 0)
     {
       if (findView == null)
@@ -470,6 +719,16 @@ public class Music implements IXposedHookLoadPackage
         coverView = (ImageView)findView.findViewById(cover_id);
       if (coverView == null) Log.w(TAG,"coverView == null");
     }
+    // background
+    if (background_id > 0)
+    {
+      if (findView == null)
+        backgroundView = (ImageView)musicActivity.findViewById(background_id);
+      else
+        backgroundView = (ImageView)findView.findViewById(background_id);
+      if (backgroundView == null) Log.w(TAG,"backgroundView == null");
+    }
+    // visualizer
     if (visualizer_id > 0)
     {
       if (findView == null)
@@ -478,6 +737,7 @@ public class Music implements IXposedHookLoadPackage
         visualizerView = (View)musicActivity.findViewById(visualizer_id);
       if (visualizerView == null) Log.w(TAG,"visualizerView == null");
     }
+    // back
     if (back_press_id > 0)
     {
       if (findView == null)
@@ -485,6 +745,24 @@ public class Music implements IXposedHookLoadPackage
       else
         back_press_view = findView.findViewById(back_press_id);
       if (back_press_view == null) Log.w(TAG,"back_press_view == null");
+    }
+    // forward
+    if (fwd_press_id > 0)
+    {
+      if (findView == null)
+        fwd_press_view = musicActivity.findViewById(fwd_press_id);
+      else
+        fwd_press_view = findView.findViewById(fwd_press_id);
+      if (fwd_press_view == null) Log.w(TAG,"fwd_press_view == null");
+    }
+    // eq button
+    if (eq_button_id > 0)
+    {
+      if (findView == null)
+        eq_button_view = (Button)musicActivity.findViewById(eq_button_id);
+      else
+        eq_button_view = (Button)findView.findViewById(eq_button_id);
+      if (eq_button_view == null) Log.w(TAG,"eq_button_view == null");
     }
     // иконка для режима смешивания
     ico_shuffle = context.getResources().getDrawable(R.drawable.ico_shuffle);
@@ -501,14 +779,29 @@ public class Music implements IXposedHookLoadPackage
     Log.d(TAG,"blank_cover_id="+blank_cover_id);
   }  
 
-  // создание обработчика нажатия возврата на 20 сек.
-  private void createBackPressListener()
+  // создание обработчика нажатия вперед/назад на 20 сек.
+  private void createBackFwdPressListener()
   {
+	// back
     if ((back_press_view != null) && (back_press_time > 0))
     {
       back_press_view.setClickable(true);
       back_press_view.setOnClickListener(backPressClick);
-      Log.d(TAG,"backpress listener created");
+      Log.d(TAG,"back press listener created");
+    }
+    // forward
+    if ((fwd_press_view != null) && (fwd_press_time > 0))
+    {
+      fwd_press_view.setClickable(true);
+      fwd_press_view.setOnClickListener(fwdPressClick);
+      Log.d(TAG,"forward press listener created");
+    }
+    // eq button
+    if (eq_button_view != null)
+    {
+      eq_button_view.setText("EQ");
+      eq_button_view.setOnClickListener(eqPressClick);
+      Log.d(TAG,"equalizer call listener created");
     }
   }
   
@@ -519,11 +812,9 @@ public class Music implements IXposedHookLoadPackage
     {
       Log.d(TAG,"back press");
       Object mServer = XposedHelpers.getObjectField(musicActivity,"mServer");
-      Log.d(TAG,"mPlayer");
       MediaPlayer mPlayer = (MediaPlayer)XposedHelpers.getObjectField(mServer,"mPlayer");
       if ((mPlayer.isPlaying()) && (back_press_time > 0))
       {
-        Log.d(TAG,"playing");
         // в режиме проигрывания
         int position = XposedHelpers.getIntField(musicActivity,"currentPosition");
         int duration = XposedHelpers.getIntField(musicActivity,"currentDuration");
@@ -534,8 +825,9 @@ public class Music implements IXposedHookLoadPackage
         if (position > back_press_time*1000)
           position = position - back_press_time*1000;
         else
+          // переход в начало
           position = 0;
-        if (duration > 0)
+        if (position >= 0)
         {
           Log.d(TAG,"set position to "+position);
           XposedHelpers.callMethod(musicActivity, "setPosition", (int)(100*position/duration));
@@ -545,6 +837,51 @@ public class Music implements IXposedHookLoadPackage
       }
     }
   };
+  
+  // переход на некоторое время назад
+  public View.OnClickListener fwdPressClick = new View.OnClickListener() 
+  {
+    public void onClick(View v) 
+    {
+      Log.d(TAG,"forward press");
+      Object mServer = XposedHelpers.getObjectField(musicActivity,"mServer");
+      MediaPlayer mPlayer = (MediaPlayer)XposedHelpers.getObjectField(mServer,"mPlayer");
+      if ((mPlayer.isPlaying()) && (fwd_press_time > 0))
+      {
+        // в режиме проигрывания
+        int position = XposedHelpers.getIntField(musicActivity,"currentPosition");
+        int duration = XposedHelpers.getIntField(musicActivity,"currentDuration");
+        //
+        Log.d(TAG,"position="+position);
+        Log.d(TAG,"duration="+duration);
+        // перемотка назад на несколько секунд назад
+        if (duration > (position+fwd_press_time*1000))
+          position = position + fwd_press_time*1000;
+        else
+          // переход в конец
+          position = duration-1;
+        if (position <= duration)
+        {
+          Log.d(TAG,"set position to "+position);
+          XposedHelpers.callMethod(musicActivity, "setPosition", (int)(100*position/duration));
+          Log.d(TAG,"position changed OK");
+          Toast.makeText(musicActivity, "переход на "+back_press_time+" секунд", Toast.LENGTH_SHORT).show();
+        }
+      }
+    }
+  };
+  
+  // вызов эквалайзера
+  public View.OnClickListener eqPressClick = new View.OnClickListener() 
+  {
+    public void onClick(View v) 
+    {
+      Log.d(TAG,"call equalizer");
+      Intent intent = new Intent(Intent.ACTION_MAIN);
+      intent.setClassName("com.android.settings","com.android.settings.MtcAmpSetup");
+      musicActivity.startActivity(intent);
+    }
+ };
 
   // замена receiver монтирования флешки и медиа-кнопок
   private void createReceivers()
@@ -585,6 +922,10 @@ public class Music implements IXposedHookLoadPackage
     IntentFilter qi = new IntentFilter();
     qi.addAction("com.android.music.playstatusrequest");
     musicActivity.registerReceiver(tagsQueryReceiver, qi);
+    // обработчик закрытия screen saver
+    IntentFilter si = new IntentFilter();
+    si.addAction("com.microntek.musicclockreset");
+    musicActivity.registerReceiver(endClockReceiver, si);
   }
   
   // посылка интента play/pause
@@ -597,129 +938,120 @@ public class Music implements IXposedHookLoadPackage
     Log.d(TAG,"com.android.music.playstatechanged sent");
   }
   
-  // чтение и обновление mp3-тегов
-  private Runnable mp3Info = new Runnable()
-  {
-    public void run() 
-    {
-      if (musicActivity == null) return;
-      readMp3Infos(musicActivity, currentFileName);
-      showMp3Infos();
-      // отсылаем информацию о тегах
-      sendNotifyIntent(musicActivity);
-    }
-  };
-  
   // чтение тэгов mp3-файла
-  private void readMp3Infos(Context context, String fileName)
+  private void readMp3Infos(String fileName)
   {
-    // если имя файла заполнено
-    if (!fileName.isEmpty())
+    album = "";
+    title = "";
+    artist = "";
+    cover = null;
+    Tag tags = null;
+    if (fileName.isEmpty()) return;
+    // пользуемся библиотекой jAudioTagger http://www.jthink.net/jaudiotagger/
+    try
     {
-      String[] names = { fileName };
-      Cursor cursor = context.getContentResolver().query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, new String[] { "title", "duration", "artist", "_id", "album", "_display_name", "_data", "album_id", "_size" }, "_data=?", names, "title_key");
-      // TODO: MediaStore.Audio.AudioColumns.ALBUM/TITLE/ARTIST/ALBUM_ID/TITLE_KEY/_ID
       try
       {
-        if (cursor.moveToFirst())
-        {
-          album = cursor.getString(cursor.getColumnIndex("album"));
-          Log.d(TAG,"album="+album);
-          title = cursor.getString(cursor.getColumnIndex("title"));
-          Log.d(TAG,"title="+title);
-          artist = cursor.getString(cursor.getColumnIndex("artist"));
-          if (artist.equals("<unknown>")) artist = "";
-          Log.d(TAG,"artist="+artist);
-          album_id = cursor.getLong(cursor.getColumnIndex("album_id"));
-          Log.d(TAG,"album_id="+album_id);
-          _id = cursor.getLong(cursor.getColumnIndex("_id"));
-          Log.d(TAG,"_id="+_id);
-          // определение картинки
-          getAlbumArt();
-          if (cover == null)
-          {
-            // обложки нет в файле
-            Log.d(TAG,"bitmap notfound in tags");
-            // картинка из каталога <album_cover_name>.jpg
-            File f = new File(fileName);
-            String coverFileName = f.getParent()+"/"+album_cover_name;
-            Log.d(TAG,"cover="+coverFileName);
-            // загрузить картинку
-            cover = BitmapFactory.decodeFile(coverFileName);
-            // если нет файла ошибки не возникает
-          }
-        }
+        MP3File mp3file = (MP3File)AudioFileIO.read(new File(fileName));
+        tags = mp3file.getTag();
+        album = tags.getFirst(FieldKey.ALBUM);
+        title = tags.getFirst(FieldKey.TITLE);
+        artist = tags.getFirst(FieldKey.ARTIST);
       }
-      catch (Exception e)
+      catch (Exception e) { }
+      // разберем имя файла
+      String file = "";
+      String folder = "";
+      String dirs[] = currentFileName.split("\\s*/\\s*");
+      if (dirs.length > 0)
       {
-        Log.e(TAG,e.getMessage());
+        Log.d(TAG,"dirs.length="+dirs.length);
+        file = dirs[dirs.length-1];
+        shortFileName = file;
+        // уберем расширение
+        int lastPointPos = file.lastIndexOf('.');
+        if (lastPointPos > 0)
+          file = file.substring(0, lastPointPos);
       }
-      finally
-      {
-        cursor.close();
-      }
+      if (dirs.length > 1) folder = dirs[dirs.length-2];
+      // если тег не задан возьмем имя папки
+      if (album.isEmpty()) album = folder;
+      // если тег не задан возьмем имя файла
+      if (title.isEmpty()) title = file;
+      // определение картинки
+      cover = getArtWork(tags, fileName, album_cover_name);
+      //
+      Log.d(TAG,"album="+album);
+      Log.d(TAG,"title="+title);
+      Log.d(TAG,"artist="+artist);
     }
-    else
+    catch (Exception e)
     {
-      album = "";
-      title = "";
-      artist = "";
-      album_id = -1;
-      cover = null;
+      Log.e(TAG,"exception: "+e.getMessage());
     }
   }
   
-  // TODO: определение картинки
-  private void getAlbumArt()
+  // картинка из файла или из каталога
+  public static Bitmap getArtWork(Tag tags, String fileName, String coverName)
   {
-	if (album_id > 0)
-	{
+    Bitmap result = null;
+    if (tags != null)
+    {
       try
       {
-        Uri uri = ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), album_id);
-        cover = MediaStore.Images.Media.getBitmap(musicActivity.getContentResolver(), uri);
-        if (cover != null) Log.d(TAG,"query:cover != null"); else Log.d(TAG,"query:cover == null");
-        if (cover != null) return;
+        Artwork artwork = tags.getFirstArtwork();
+        if (artwork != null)
+        {
+          byte[] cover_data = artwork.getBinaryData();
+          result = BitmapFactory.decodeByteArray(cover_data, 0, cover_data.length);
+        }
       }
       catch (Exception e)
       {
-        cover = null;
-        Log.d(TAG,"exception: cover == null");
-      }
-	}
-	if (_id > 0)
-	{
-      Uri uri = Uri.parse("content://media/external/audio/media/"+_id+"/albumart");
-      try
-      {
-        ParcelFileDescriptor fd = musicActivity.getContentResolver().openFileDescriptor(uri, "r");
-        if (fd != null) 
-        {
-          cover = BitmapFactory.decodeFileDescriptor(fd.getFileDescriptor());
-          if (cover != null) Log.d(TAG,"descriptor:cover != null"); else Log.d(TAG,"descriptor:cover == null");
-        }
-      }
-      catch (Exception e) {}
-	}
+        Log.e(TAG,"BitmapFactory: "+e.getMessage());
+     }
+    }
+    if (result == null)
+    {
+      // обложки нет в файле, возьмем картинку album_cover_name из каталога 
+      File f = new File(fileName);
+      String coverFileName = f.getParent()+"/"+coverName;
+      Log.d(TAG,"cover="+coverFileName);
+      // загрузить картинку
+      result = BitmapFactory.decodeFile(coverFileName);
+      // если нет файла ошибки не возникает
+    }
+    return result;
   }
   
   // показ тегов
   private void showMp3Infos()
   {
-	// title
-	if (titleView != null)
-	  titleView.setText(title);
-	// album
-	if (albumView != null)
-	  albumView.setText(album);
-	// artist
-	if (artistView != null)
-	  artistView.setText(artist);
-	// cover
-	if (coverView != null)
-	{
-	  coverView.setImageBitmap(cover);
-	  if (cover != null)
+    // title
+    if (titleView != null)
+      titleView.setText(title);
+    // album
+    if (albumView != null)
+      albumView.setText(album);
+    // artist
+    if (artistView != null)
+      artistView.setText(artist);
+    // cover
+    if (backgroundView != null)
+    {
+      backgroundView.setImageBitmap(cover);
+      if (cover != null)
+      {
+        backgroundView.setVisibility(View.VISIBLE);
+        backgroundView.setAlpha(background_alpha);
+      }
+      else
+        backgroundView.setVisibility(View.INVISIBLE);
+    }
+    if (coverView != null)
+    {
+      coverView.setImageBitmap(cover);
+      if (cover != null)
       {
         coverView.setVisibility(View.VISIBLE);
         if (visualizerView != null)
@@ -731,24 +1063,19 @@ public class Music implements IXposedHookLoadPackage
     	if (blank_cover_id == 0)
     	{
     	  // прячем обложку
-    	  Log.d(TAG,"hide image");
           coverView.setVisibility(View.INVISIBLE);
           if (visualizerView != null)
         	// показываем визуализатор
             visualizerView.setVisibility(View.VISIBLE);
     	}
     	else
-        {
-          // TODO: показываем картинку по-умолчанию
-    	  Log.d(TAG,"set image default picture");
           coverView.setImageResource(blank_cover_id);
-       }
       }
     }
   }  
   
   // теги в intent extras
-  private void addMp3Tags(Intent intent)
+  private static void addMp3Tags(Intent intent)
   {
     // artist
     intent.putExtra("artist", artist);
@@ -756,22 +1083,27 @@ public class Music implements IXposedHookLoadPackage
     // album
     intent.putExtra("album", album);
     intent.putExtra(MediaStore.EXTRA_MEDIA_ALBUM, album);
-    intent.putExtra("album_id", album_id);
     // title
-    String titleTag = title;
-    // показать имя файла, если нет тега
-    if (title.isEmpty())
-    {
-      File f = new File(currentFileName);
-      titleTag = f.getName();
-    }
-    Log.d(TAG,"titleTag="+titleTag);
-    intent.putExtra("track", titleTag);
-    intent.putExtra("title", titleTag);
-    intent.putExtra(MediaStore.EXTRA_MEDIA_TITLE, titleTag);
+    intent.putExtra("track", title);
+    intent.putExtra("title", title);
+    intent.putExtra(MediaStore.EXTRA_MEDIA_TITLE, title);
     // playing
     intent.putExtra("playstate", mPlaying);
     intent.putExtra("playing", mPlaying);
+    // filename
+    intent.putExtra("filename", currentFileName);
+  }
+  
+  // форматирование строки для всплывающего уведомления
+  private static String getToastText()
+  {
+	String result = toast_format;
+	result = result.replaceAll("%title%", title);
+	result = result.replaceAll("%album%", album);
+	result = result.replaceAll("%artist%", artist);
+	result = result.replaceAll("%fullfilename%", currentFileName);
+	result = result.replaceAll("%filename%", shortFileName);
+	return result;
   }
   
   // обработчик MEDIA_MOUNT/UNMOUNT/EJECT
@@ -877,7 +1209,19 @@ public class Music implements IXposedHookLoadPackage
     {
       // отправить mp3-теги
       Log.d(TAG,"Music: tags query receiver");
+      ss_flag = true;
       sendNotifyIntent(context);
+    }
+  };
+ 
+  // обработчик выключения Screen Saver
+  private BroadcastReceiver endClockReceiver = new BroadcastReceiver()
+  {
+
+    public void onReceive(Context context, Intent intent)
+    {
+      Log.d(TAG,"Music: end clock receiver");
+      ss_flag = false;
     }
   };
   

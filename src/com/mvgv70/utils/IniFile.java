@@ -5,68 +5,108 @@ import java.io.BufferedWriter;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 
+import android.content.Context;
 import android.util.Log;
 
+//
+//     version 1.2.0
+//
 public class IniFile 
 {
 	
   HashMap<String,ArrayList<String>> ini_file = new HashMap<String,ArrayList<String>>();
 	
+  // чтение из файла
   public void loadFromFile(String fileName) throws IOException
   {
-    BufferedReader br;
-    String line;
-    String section = "";
-    // пустая секция
-    ini_file.put("", new ArrayList<String>());
-    br = new BufferedReader(new FileReader(fileName));
-    try 
+    BufferedReader br = new BufferedReader(new FileReader(fileName));
+    try
     {
-      while ((line = br.readLine()) != null)
-      {
-        // разбираем по строкам
-        if (line.trim().isEmpty())
-        {
-          // пустая строка
-        }
-        else if (line.startsWith("#"))
-        {
-          // комментарий
-        }
-        else if (line.startsWith(";"))
-        {
-          // комментарий
-        }
-        else if (line.startsWith("["))
-        {
-          // секция
-          section = line.substring(1,line.lastIndexOf("]")).trim();
-          ini_file.put(section, new ArrayList<String>());
-        }
-        else
-        {
-          // значение
-          int equalIndex = line.indexOf("=");
-          if (equalIndex > 0)
-          {
-            String key = line.substring(0,equalIndex).trim();
-            String value = line.substring(equalIndex+1);
-            ini_file.get(section).add(key+"="+value);
-         }
-          else
-           ini_file.get(section).add(line);
-        }
-      }
+      readFromBufferedReader(br);
     }
     finally
     {
       br.close();
     }
   }
+  
+  // чтение из assets
+  public void loadFromAssets(Context context, String fileName) throws IOException
+  {
+	InputStream is = context.getAssets().open(fileName);
+    BufferedReader br = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+    try
+    {
+      readFromBufferedReader(br);
+    }
+    finally
+    {
+      br.close();
+      is.close();
+    }
+  }
+  
+  // чтение из BufferedReader
+  private void readFromBufferedReader(BufferedReader br) throws IOException
+  {
+    final String BOM = "\uFEFF"; 
+    int line_no = 1;
+    String line;
+    String section = "";
+    ini_file.clear();
+    // пустая секция
+    ini_file.put("", new ArrayList<String>());
+    while ((line = br.readLine()) != null)
+    {
+      // выкинуть BOM из первой строки
+      if (line_no == 1) 
+      {
+        if (line.startsWith(BOM))
+          line = line.replace(BOM,"");
+      }
+      // разбираем по строкам
+      if (line.trim().isEmpty())
+      {
+        // пустая строка
+      }
+      else if (line.startsWith("#"))
+      {
+        // комментарий
+      }
+      else if (line.startsWith(";"))
+      {
+        // комментарий
+      }
+      else if (line.startsWith("["))
+      {
+        // секция
+        section = line.substring(1,line.lastIndexOf("]")).trim();
+        ini_file.put(section, new ArrayList<String>());
+      }
+      else
+      {
+        // значение
+        int equalIndex = line.indexOf("=");
+        if (equalIndex > 0)
+        {
+          String key = line.substring(0,equalIndex).trim();
+          String value = line.substring(equalIndex+1);
+          ini_file.get(section).add(key+"="+value);
+      }
+      else
+        ini_file.get(section).add(line);
+      }
+      line_no++;
+    }
+  }
+  
   
   public void clear()
   {
@@ -85,6 +125,56 @@ public class IniFile
       return ini_file.get(section).iterator();
 	else
 	  return null;
+  }
+  
+  public class KeyIterator implements Iterator<String>
+  {
+    private Iterator<String> iterator;
+    private ArrayList<String> asection = new ArrayList<String>();
+	  
+    KeyIterator(String section)
+    {
+      asection = ini_file.get(section);
+      iterator = asection.iterator();
+    }
+
+    @Override
+    public boolean hasNext() 
+    {
+      return iterator.hasNext();
+	}
+
+    @Override
+    public String next() 
+    {
+      String line = iterator.next();
+      int equalIndex = line.indexOf("=");
+      if (equalIndex > 0)
+        line = line.substring(0,equalIndex).trim();
+      return line;
+	}
+
+    @Override
+    public void remove() 
+    {
+      iterator.remove();
+    }
+    
+    public int size()
+    {
+      return asection.size();
+    }
+	  
+  };
+  
+  public KeyIterator enumKeys(String section)
+  {
+    return new KeyIterator(section);
+  }
+  
+  public List<String> getLines(String section)
+  {
+    return ini_file.get(section);
   }
   
   public int linesCount(String section)
@@ -301,9 +391,4 @@ public class IniFile
     }
   }
   
-  public float getAccuracy()
-  {
-    return 10;
-  }
-
 }
