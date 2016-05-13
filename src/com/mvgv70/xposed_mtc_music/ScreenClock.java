@@ -19,7 +19,6 @@ import android.graphics.Color;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
-import android.location.LocationProvider;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.text.TextUtils;
@@ -57,12 +56,14 @@ public class ScreenClock implements IXposedHookLoadPackage
   private static String date_name = "";
   private static String date_format = "";
   private static String cover_name = "";
+  // parameters
   private static float cover_alpha = 0;
   private static String album_cover_name = "";
   private static String background_name = "";
   private static int backgroundColor = 0;
   private static int textColor = 0;
   private static boolean bluetoothClose = false;
+  private static float speed_divider = 1;
   // view
   private static TextView titleView = null;
   private static TextView albumView = null;
@@ -176,7 +177,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       date_format = props.getValue(SCREENCLOCK_SECTION, "date_format", "");
       Log.d(TAG,"date_format="+date_format);
       // цвет надписей
-      textColor = 0;
+      textColor = 0xffe3d3b6;
       String color = props.getValue(SCREENCLOCK_SECTION, "color", "");
       Log.d(TAG,"color="+color);
       try
@@ -197,7 +198,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       background_name = props.getValue(SCREENCLOCK_SECTION, "background_name", "");
       Log.d(TAG,"background_name="+background_name);
       // background_color
-      backgroundColor = 0;
+      backgroundColor = 0xc0000000;
       color = props.getValue(SCREENCLOCK_SECTION, "background_color", "");
       Log.d(TAG,"background_color="+color);
       try
@@ -214,6 +215,9 @@ public class ScreenClock implements IXposedHookLoadPackage
       // формат даты
       date_format = props.getValue(SCREENCLOCK_SECTION, "date_format", "");
       Log.d(TAG,"date_format="+date_format);
+      // скорость в мил€х
+      speed_divider = props.getFloatValue(SCREENCLOCK_SECTION, "speed.divider", 1);
+      Log.d(TAG,"speed.divider="+speed_divider);
     }
     catch (Exception e)
     {
@@ -253,12 +257,19 @@ public class ScreenClock implements IXposedHookLoadPackage
       // формат даты
       date_format = user_props.getValue(SCREENCLOCK_SECTION, "date_format", date_format);
       Log.d(TAG,"date_format="+date_format);
+      // album_cover_name
+      album_cover_name = user_props.getValue(MUSIC_SECTION, "album_cover", album_cover_name);
+      Log.d(TAG,"album_cover_name="+album_cover_name);
       // touch_mode
       touchMode = user_props.getBoolValue(SCREENCLOCK_SECTION, "touch_mode", touchMode);
       Log.d(TAG,"touch_mode="+touchMode);
       // bluetooth
       bluetoothClose = user_props.getBoolValue(SCREENCLOCK_SECTION, "bluetooth.close", false);
       Log.d(TAG,"bluetooth.close="+bluetoothClose);
+      // скорость в мил€х
+      speed_divider = user_props.getFloatValue(SCREENCLOCK_SECTION, "speed.divider", speed_divider);
+      if (speed_divider <= 0) speed_divider = 1;
+      Log.d(TAG,"speed.divider="+speed_divider);
     }
     catch (Exception e)
     {
@@ -317,7 +328,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       titleView = (TextView)screenClockActivity.findViewById(title_id);
       if (titleView != null)
       {
-        if (textColor != 0) titleView.setTextColor(textColor);
+        titleView.setTextColor(textColor);
       }
       else
         Log.w(TAG,"titleView == null");
@@ -327,7 +338,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       albumView = (TextView)screenClockActivity.findViewById(album_id);
       if (albumView != null)
       {
-        if (textColor != 0) albumView.setTextColor(textColor);
+        albumView.setTextColor(textColor);
       }
       else
         Log.w(TAG,"albumView == null");
@@ -337,7 +348,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       artistView = (TextView)screenClockActivity.findViewById(artist_id);
       if (artistView != null)
       {
-        if (textColor != 0) artistView.setTextColor(textColor);
+        artistView.setTextColor(textColor);
       }
       else 
         Log.w(TAG,"artistView == null");
@@ -352,7 +363,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       freqView = (TextView)screenClockActivity.findViewById(freq_id);
       if (freqView != null)
       {
-        if (textColor != 0) freqView.setTextColor(textColor);
+        freqView.setTextColor(textColor);
       }
       else
         Log.w(TAG,"freqView == null");
@@ -362,7 +373,7 @@ public class ScreenClock implements IXposedHookLoadPackage
       stationView = (TextView)screenClockActivity.findViewById(station_id);
       if (stationView != null)
       {
-        if (textColor != 0) stationView.setTextColor(textColor);
+        stationView.setTextColor(textColor);
       }
       else
         Log.w(TAG,"stationView == null");
@@ -391,9 +402,17 @@ public class ScreenClock implements IXposedHookLoadPackage
     {
       backgroundView = (View)screenClockActivity.findViewById(background_id);
       if (backgroundView == null) Log.w(TAG,"backgroundView == null");
-      if (touchMode && (backgroundView != null))
-        backgroundView.setOnClickListener(screenClick);
     }
+	// background
+	if (backgroundView != null)
+	{
+      if (touchMode)
+        backgroundView.setOnClickListener(screenClick);
+	  // TODO: установка цвета фона
+	  Log.d(TAG,"setBackgroundColor("+backgroundColor+")");
+      backgroundView.setBackgroundColor(backgroundColor); 
+	}
+
   }
   
   // создание broadcast receiver
@@ -455,6 +474,7 @@ public class ScreenClock implements IXposedHookLoadPackage
     public void onReceive(Context context, Intent intent)
     {
       Log.d(TAG,"ScreenClock: tags receiver "+intent.getAction());
+      if (!intent.hasExtra(MediaStore.EXTRA_MEDIA_TITLE)) return;
       // mp3 tags
       String title = intent.getStringExtra(MediaStore.EXTRA_MEDIA_TITLE);
       String artist = intent.getStringExtra(MediaStore.EXTRA_MEDIA_ARTIST);
@@ -479,10 +499,13 @@ public class ScreenClock implements IXposedHookLoadPackage
       }
       if (albumView != null) albumView.setText(album);
       if (!TextUtils.isEmpty(filename)) getCover(filename);
+      // очистим пол€ радио
+      if (freqView != null) freqView.setText("");
+      if (stationView != null) stationView.setText("");
     }
   };
   
-  // чтение и показ картинки из тегов
+  // ћузыка: чтение и показ картинки из тегов
   private static void getCover(String fileName)
   {
     // cover
@@ -503,15 +526,9 @@ public class ScreenClock implements IXposedHookLoadPackage
 	  coverView.setImageBitmap(cover);
 	  coverView.setAlpha(cover_alpha);
     }
-	// background
-	if (backgroundView != null)
-	{
-	  // усановка цвета фона
-	  if (backgroundColor != 0) backgroundView.setBackgroundColor(backgroundColor);
-	}
   }
   
-  // com.android.radio.freq
+  // –адио: com.android.radio.freq
   private BroadcastReceiver freqReceiver = new BroadcastReceiver()
   {
 
@@ -535,6 +552,11 @@ public class ScreenClock implements IXposedHookLoadPackage
         if ((station != null) && !station.isEmpty()) station = station + station_add;
         stationView.setText(station);
       }
+      // очистим пол€ музыка
+      if (titleView != null) titleView.setText("");
+      if (artistView != null) artistView.setText("");
+      if (albumView != null) albumView.setText("");
+      if (coverView != null) coverView.setImageBitmap(null);
     }
   };
   
@@ -545,7 +567,13 @@ public class ScreenClock implements IXposedHookLoadPackage
     public void onReceive(Context context, Intent intent)
     {
       Log.d(TAG,"Bluetooth: "+intent.getIntExtra("connect_state", 0));
-      screenClockActivity.finish();
+      int connect_state = intent.getIntExtra("connect_state",0);
+      if ((connect_state == 2) || (connect_state == 3))
+      {
+        // CALL_OUT or CALL_IN
+        screenClockActivity.finish();
+        Log.d(TAG,"finish by bluetooth");
+      }
     }
   };
   
@@ -555,7 +583,7 @@ public class ScreenClock implements IXposedHookLoadPackage
     public void onLocationChanged(Location location)
     {
       if (!location.hasSpeed()) return;
-      int speed = (int)(location.getSpeed()*3.6);
+      int speed = (int)(location.getSpeed()*3.6/speed_divider);
       speedView.setText(speed+speed_units);
     }
       
@@ -567,8 +595,7 @@ public class ScreenClock implements IXposedHookLoadPackage
     public void onStatusChanged(String provider, int status, Bundle extras) 
     {
       Log.d(TAG,"gps provider status="+status);
-      if ((status == LocationProvider.OUT_OF_SERVICE) || (status == LocationProvider.TEMPORARILY_UNAVAILABLE))
-        speedView.setText("0"+speed_units);
+      // if ((status == LocationProvider.OUT_OF_SERVICE) || (status == LocationProvider.TEMPORARILY_UNAVAILABLE))
     }
   };
   
@@ -578,6 +605,7 @@ public class ScreenClock implements IXposedHookLoadPackage
     public void onClick(View v) 
     {
       screenClockActivity.finish();
+      Log.d(TAG,"finish by touch");
     }
   };
   

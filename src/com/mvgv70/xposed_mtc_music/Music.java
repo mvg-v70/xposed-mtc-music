@@ -17,6 +17,7 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.media.MediaPlayer;
 
@@ -29,11 +30,13 @@ import android.provider.MediaStore;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.LayoutInflater;
 import android.view.View;
-import android.view.ViewGroup;
+import android.view.ViewGroup.LayoutParams;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -64,6 +67,10 @@ public class Music implements IXposedHookLoadPackage
   private static boolean ss_flag = false;
   private static boolean toastEnable = false;
   private static int toastSize = 0;
+  private static boolean toastPictureShow = false;
+  private static int toastPictureSize = 0;
+  private static int toastTextColor = 0;
+  private static float toastPictureAlpha = 1;
   // private static Handler handler;
   // режимы loop
   private final static int LOOP_MODE_NEXT_DIR = 0;
@@ -122,7 +129,7 @@ public class Music implements IXposedHookLoadPackage
         
       @Override
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-        Log.d(TAG,"onCreate");
+        Log.d(TAG,"Music:onCreate");
         musicActivity = (Activity)param.thisObject;
         // handler = (Handler)XposedHelpers.getObjectField(musicActivity, "handler");
         mUi = XposedHelpers.getObjectField(param.thisObject, "mUi");
@@ -152,6 +159,7 @@ public class Music implements IXposedHookLoadPackage
       @Override
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
     	active_flag = false;
+    	Log.d(TAG,"onStop, active_flag = false");
       }
     };
     
@@ -162,6 +170,7 @@ public class Music implements IXposedHookLoadPackage
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
         ss_flag = false;
     	active_flag = true;
+    	Log.d(TAG,"onResume, active_flag = true");
       }
     };
     
@@ -170,7 +179,7 @@ public class Music implements IXposedHookLoadPackage
         
       @Override
       protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-    	Log.d(TAG,"onDestroy");
+    	Log.d(TAG,"Music:onDestroy");
     	if (usbReceiver != null) musicActivity.unregisterReceiver(mediaReceiver);
         if (control_keys) 
         {
@@ -220,22 +229,11 @@ public class Music implements IXposedHookLoadPackage
         // отсылаем информацию о тегах
         sendNotifyIntent(musicActivity);
         // всплывающее уведомление
+        // !!!
+        Log.d(TAG,"toastEnable="+toastEnable+", active_flag="+active_flag+", ss_flag="+ss_flag);
         if (toastEnable && !active_flag && !ss_flag)
         {
-          if (toast != null)
-          {
-            toast.cancel();
-            toast = null;
-          }
-          toast = Toast.makeText(musicActivity, getToastText(), Toast.LENGTH_SHORT);
-          if (toastSize > 0)
-          {
-            // toast size
-            ViewGroup group = (ViewGroup)toast.getView();
-            TextView messageTextView = (TextView)group.getChildAt(0);
-            messageTextView.setTextSize(toastSize);
-          }
-          toast.show();
+          showToast();
         }
       }
     };
@@ -373,7 +371,7 @@ public class Music implements IXposedHookLoadPackage
       }
     };
     
-    // MusicServer.sPrev()
+    // TODO: MusicServer.sPrev()
     XC_MethodHook sPrev = new XC_MethodHook() {
         
       @Override
@@ -401,6 +399,16 @@ public class Music implements IXposedHookLoadPackage
               // играем предыдующую папку
               XposedHelpers.callMethod(musicActivity, "toFolder", index-1);
               // TODO: перейти на последний трек
+              @SuppressWarnings("unchecked")
+              ArrayList<String> new_music_list = (ArrayList<String>)XposedHelpers.getObjectField(musicActivity, music_list_name);
+              Log.d(TAG,"new_music_list.size="+music_list.size());
+              sel_item = new_music_list.size()-1;
+              Log.d(TAG,"new_sel_item="+sel_item);
+              if (sel_item >= 0)
+              {
+                XposedHelpers.setIntField(musicActivity, "selItem", sel_item);
+                XposedHelpers.callMethod(musicActivity, "sSwitch");
+              }
             }
             // не вызываем штатный обработчик
             param.setResult(null);
@@ -514,6 +522,7 @@ public class Music implements IXposedHookLoadPackage
   private void readSettings()
   {
     assetProps = false;
+    String toastTextColorStr = "";
     try
     {
       // читаем настроечный файл из assests
@@ -585,6 +594,18 @@ public class Music implements IXposedHookLoadPackage
       // toast.format
       toast_format = props.getValue(MUSIC_SECTION, "toast.format", "%title%");
       Log.d(TAG,"toast.format="+toast_format);
+      // toast.picture.show
+      toastPictureShow = props.getBoolValue(MUSIC_SECTION, "toast.picture.show", false);
+      Log.d(TAG,"toast.picture.show="+toastPictureShow);
+      // toast.picture.size
+      toastPictureSize = props.getIntValue(MUSIC_SECTION, "toast.picture.size", 150);
+      Log.d(TAG,"toast.picture.size="+toastPictureSize);
+      // toast.color
+      toastTextColorStr = props.getValue(MUSIC_SECTION, "toast.color", "");
+      Log.d(TAG,"toast.color="+toastTextColorStr);
+      // toast.picture.alpha
+      toastPictureAlpha = props.getFloatValue(MUSIC_SECTION, "toast.picture.alpha", 1.0f);
+      Log.d(TAG,"toast.picture.alpha="+toastPictureAlpha);
     } 
     catch (Exception e)
     {
@@ -617,9 +638,30 @@ public class Music implements IXposedHookLoadPackage
       // toast.format
       toast_format = user_props.getValue(MUSIC_SECTION, "toast.format", toast_format);
       Log.d(TAG,"toast.format="+toast_format);
+      // toast.picture.show
+      toastPictureShow = user_props.getBoolValue(MUSIC_SECTION, "toast.picture.show", toastPictureShow);
+      Log.d(TAG,"toast.picture.show="+toastPictureShow);
+      // toast.picture.size
+      toastPictureSize = user_props.getIntValue(MUSIC_SECTION, "toast.picture.size", toastPictureSize);
+      Log.d(TAG,"toast.picture.size="+toastPictureSize);
       // background_alpha
       background_alpha = user_props.getFloatValue(MUSIC_SECTION, "background_alpha", background_alpha);
       Log.d(TAG,"background_alpha="+background_alpha);
+      // toast.color
+      toastTextColorStr = user_props.getValue(MUSIC_SECTION, "toast.color", toastTextColorStr);
+      Log.d(TAG,"toast.color="+toastTextColorStr);
+      toastTextColor = Color.WHITE;
+      try
+      {
+        if (!toastTextColorStr.isEmpty()) toastTextColor = Color.parseColor(toastTextColorStr);
+      }
+      catch (Exception e)
+      {
+        Log.e(TAG,"invalid color: "+toastTextColorStr);
+      }
+      // toast.picture.alpha
+      toastPictureAlpha = user_props.getFloatValue(MUSIC_SECTION, "toast.picture.alpha", toastPictureAlpha);
+      Log.d(TAG,"toast.picture.alpha="+toastPictureAlpha);
     }
     catch (Exception e)
     {
@@ -965,7 +1007,6 @@ public class Music implements IXposedHookLoadPackage
       String dirs[] = currentFileName.split("\\s*/\\s*");
       if (dirs.length > 0)
       {
-        Log.d(TAG,"dirs.length="+dirs.length);
         file = dirs[dirs.length-1];
         shortFileName = file;
         // уберем расширение
@@ -1169,6 +1210,76 @@ public class Music implements IXposedHookLoadPackage
       usbReceiver.onReceive(context, intent);
     }
   };
+  
+  // TODO: всплывающее уведомление
+  private void showToast()
+  {
+    if (toast != null)
+    {
+      toast.cancel();
+      toast = null;
+    }
+    String toastString = getToastText();
+    toast = Toast.makeText(musicActivity, toastString, Toast.LENGTH_SHORT);
+    Log.d(TAG,"toastPictureShow="+toastPictureShow);
+    if (toastPictureShow)
+    {
+      Log.d(TAG,"context="+context);
+      // в режиме показа картинки заменим layout
+      LayoutInflater inflater = LayoutInflater.from(context);
+      // LayoutInflater inflater = musicActivity.getLayoutInflater();
+      Log.d(TAG,"inflater="+inflater);
+      Log.d(TAG,"R.layout.toast_layout="+R.layout.toast_layout);
+      View view = null;
+      try {
+      view = inflater.inflate(R.layout.toast_layout, null, false);
+      } catch (Exception e) { 
+      Log.d(TAG,"exception: "+e.getMessage());
+      }
+      if (view == null) Log.e(TAG,"toast view == null");
+      Log.d(TAG,"view="+view);
+      Log.d(TAG,"view.id="+view.getId());
+	  toast.setView(view);
+	  Log.d(TAG,"setView OK");
+      // toast picture
+      if (cover != null)
+      {
+        ImageView toastImage = (ImageView)view.findViewById(R.id.toast_image);
+        // Bitmap bm = Bitmap.createScaledBitmap(cover,toastPictureSize,toastPictureSize,false);
+        // toastImage.setImageBitmap(bm);
+        LayoutParams lp = toastImage.getLayoutParams();
+        lp.height = toastPictureSize;
+        lp.width = toastPictureSize;
+        toastImage.setImageBitmap(cover);
+        Log.d(TAG,"setImageBitmap OK");
+        toastImage.setAlpha(toastPictureAlpha);
+        Log.d(TAG,"setAlpha OK");
+      }
+      // toast text
+      TextView toastText = (TextView)view.findViewById(R.id.toast_text);
+      Log.d(TAG,"toastString="+toastString);
+      toastText.setText(toastString);
+      Log.d(TAG,"setText OK");
+      Log.d(TAG,"toastSize="+toastSize);
+      if (toastSize > 0)
+        toastText.setTextSize(toastSize);
+      Log.d(TAG,"setTextSize OK");
+      toastText.setTextColor(toastTextColor);
+      Log.d(TAG,"setTextColor OK");
+    }
+    else
+    {
+      // меняем только размер текста
+      LinearLayout layout = (LinearLayout)toast.getView();
+      TextView toastText = (TextView)layout.getChildAt(0);
+      // toast size
+      if (toastSize > 0)
+        toastText.setTextSize(toastSize);
+      toastText.setTextColor(toastTextColor);
+    }
+    toast.show();
+    Log.d(TAG,"show OK");
+  }
   
   // обработчик android.intent.action.MEDIA_BUTTON
   private BroadcastReceiver mediaButtonReceiver = new BroadcastReceiver()
